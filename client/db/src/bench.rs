@@ -58,6 +58,7 @@ pub struct BenchmarkingState<B: BlockT> {
 	genesis: HashMap<Vec<u8>, (Vec<u8>, i32)>,
 	record: Cell<Vec<Vec<u8>>>,
 	cache_size_mb: Option<usize>,
+	memory_db: bool,
 }
 
 impl<B: BlockT> BenchmarkingState<B> {
@@ -81,6 +82,7 @@ impl<B: BlockT> BenchmarkingState<B> {
 			genesis_root: Default::default(),
 			record: Default::default(),
 			cache_size_mb,
+			memory_db: true,
 		};
 
 		state.reopen()?;
@@ -102,16 +104,24 @@ impl<B: BlockT> BenchmarkingState<B> {
 	fn reopen(&self) -> Result<(), String> {
 		*self.state.borrow_mut() = None;
 		self.db.set(None);
-		let mut db_config = DatabaseConfig::with_columns(1);
-		if let Some(size) = &self.cache_size_mb {
-			db_config.memory_budget.insert(0, *size);
+		let num_columns = 1;
+		if self.memory_db {
+			let db = Arc::new(kvdb_memorydb::create(num_columns));
+			self.db.set(Some(db.clone()));
+			let storage_db = Arc::new(StorageDb::<B> { db, _block: Default::default() });
+			*self.state.borrow_mut() = Some(DbState::<B>::new(storage_db, self.root.get()));
+		} else {
+			let mut db_config = DatabaseConfig::with_columns(num_columns);
+			if let Some(size) = &self.cache_size_mb {
+				db_config.memory_budget.insert(0, *size);
+			}
+			let path = self.path.to_str()
+				.ok_or_else(|| String::from("Invalid database path"))?;
+			let db = Arc::new(Database::open(&db_config, &path).map_err(|e| format!("Error opening database: {:?}", e))?);
+			self.db.set(Some(db.clone()));
+			let storage_db = Arc::new(StorageDb::<B> { db, _block: Default::default() });
+			*self.state.borrow_mut() = Some(DbState::<B>::new(storage_db, self.root.get()));
 		}
-		let path = self.path.to_str()
-			.ok_or_else(|| String::from("Invalid database path"))?;
-		let db = Arc::new(Database::open(&db_config, &path).map_err(|e| format!("Error opening database: {:?}", e))?);
-		self.db.set(Some(db.clone()));
-		let storage_db = Arc::new(StorageDb::<B> { db, _block: Default::default() });
-		*self.state.borrow_mut() = Some(DbState::<B>::new(storage_db, self.root.get()));
 		Ok(())
 	}
 
@@ -281,7 +291,8 @@ impl<B: BlockT> StateBackend<HashFor<B>> for BenchmarkingState<B> {
 		} else {
 			return Err("Trying to commit to a closed db".into())
 		}
-		self.reopen()
+		if !self.memory_db { self.reopen()?; }
+		Ok(())
 	}
 
 	fn wipe(&self) -> Result<(), Self::Error> {
@@ -302,7 +313,7 @@ impl<B: BlockT> StateBackend<HashFor<B>> for BenchmarkingState<B> {
 		*self.state.borrow_mut() = None;
 
 		self.root.set(self.genesis_root.clone());
-		self.reopen()?;
+		if !self.memory_db { self.reopen()?; }
 		Ok(())
 	}
 
