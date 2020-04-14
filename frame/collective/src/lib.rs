@@ -188,15 +188,14 @@ decl_module! {
 		///
 		/// Requires root origin.
 		#[weight = FunctionOf(
-			|args: (&Vec<T::AccountId>, Option<T::AccountId>, u32)| {
+			|args: (&Vec<T::AccountId>, &Option<T::AccountId>, &u32)| {
 				let new_member_count = *args.0.len();
 				let old_members_count = *args.2;
 				T::DbWeight::get().reads_writes(2, 2)
-				+ 2_000_000
-				+ 600_000 * new_member_count
+				+ 500_000 * new_member_count
 				+ 500_000 * old_members_count
 			}
-			|_: (&BalanceOf<T, I>, &u16)| DispatchClass::Operational,
+			|_: (&Vec<T::AccountId>, &Option<T::AccountId>, &u32)| DispatchClass::Operational,
 			true
 		)]
 		fn set_members(origin, new_members: Vec<T::AccountId>, prime: Option<T::AccountId>, old_members_count: u32) {
