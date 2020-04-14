@@ -201,9 +201,11 @@ decl_module! {
 		)]
 		fn set_members(origin, new_members: Vec<T::AccountId>, prime: Option<T::AccountId>, old_members_count: u32) {
 			ensure_root(origin)?;
+			let old = Members::<T, I>::get();
+			ensure!(old.len() <= old_members_count as usize, "Invalid input data");
 			let mut new_members = new_members;
 			new_members.sort();
-			let old = Members::<T, I>::get();
+
 			<Self as ChangeMembers<T::AccountId>>::set_members_sorted(&new_members[..], &old);
 			Prime::<T, I>::set(prime);
 		}
