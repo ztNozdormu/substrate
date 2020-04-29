@@ -52,7 +52,12 @@ fn add_proposal<T: Trait>(n: u32) -> Result<T::Hash, &'static str> {
 	let value = T::MinimumDeposit::get();
 	let proposal_hash: T::Hash = T::Hashing::hash_of(&n);
 
-	Democracy::<T>::propose(RawOrigin::Signed(other).into(), proposal_hash, value.into())?;
+	Democracy::<T>::propose(
+		RawOrigin::Signed(other).into(),
+		proposal_hash,
+		value.into(),
+		u32::max_value(),
+	)?;
 
 	Ok(proposal_hash)
 }
@@ -116,7 +121,7 @@ benchmarks! {
 		let caller = funded_account::<T>("caller", 0);
 		let proposal_hash: T::Hash = T::Hashing::hash_of(&p);
 		let value = T::MinimumDeposit::get();
-	}: _(RawOrigin::Signed(caller), proposal_hash, value.into())
+	}: _(RawOrigin::Signed(caller), proposal_hash, value.into(), u32::max_value())
 	verify {
 		assert_eq!(Democracy::<T>::public_props().len(), (p + 1) as usize, "Proposals not created.");
 	}
@@ -130,15 +135,15 @@ benchmarks! {
 		// Create s existing "seconds"
 		for i in 0 .. s {
 			let seconder = funded_account::<T>("seconder", i);
-			Democracy::<T>::second(RawOrigin::Signed(seconder).into(), 0)?;
+			Democracy::<T>::second(RawOrigin::Signed(seconder).into(), 0, u32::max_value())?;
 		}
 
 		let deposits = Democracy::<T>::deposit_of(0).ok_or("Proposal not created")?;
-		assert_eq!(deposits.1.len(), (s + 1) as usize, "Seconds not recorded");
-	}: _(RawOrigin::Signed(caller), 0)
+		assert_eq!(deposits.0.len(), (s + 1) as usize, "Seconds not recorded");
+	}: _(RawOrigin::Signed(caller), 0, u32::max_value())
 	verify {
 		let deposits = Democracy::<T>::deposit_of(0).ok_or("Proposal not created")?;
-		assert_eq!(deposits.1.len(), (s + 2) as usize, "`second` benchmark did not work");
+		assert_eq!(deposits.0.len(), (s + 2) as usize, "`second` benchmark did not work");
 	}
 
 	vote_new {
@@ -296,13 +301,14 @@ benchmarks! {
 	// Worst case scenario, we external propose a previously blacklisted proposal
 	external_propose {
 		let p in 1 .. MAX_PROPOSALS;
+		let v in 1 .. MAX_VETOERS;
 
 		let origin = T::ExternalOrigin::successful_origin();
 		let proposal_hash = T::Hashing::hash_of(&p);
 		// Add proposal to blacklist with block number 0
 		Blacklist::<T>::insert(
 			proposal_hash,
-			(T::BlockNumber::zero(), vec![T::AccountId::default()])
+			(T::BlockNumber::zero(), (0..v).map(|_| T::AccountId::default()).collect::<Vec<_>>())
 		);
 
 		let call = Call::<T>::external_propose(proposal_hash);
@@ -650,7 +656,7 @@ benchmarks! {
 		assert!(Preimages::<T>::contains_key(proposal_hash));
 
 		let caller = funded_account::<T>("caller", 0);
-	}: _(RawOrigin::Signed(caller), proposal_hash.clone())
+	}: _(RawOrigin::Signed(caller), proposal_hash.clone(), u32::max_value())
 	verify {
 		let proposal_hash = T::Hashing::hash(&encoded_proposal[..]);
 		assert!(!Preimages::<T>::contains_key(proposal_hash));
