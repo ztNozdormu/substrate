@@ -457,7 +457,7 @@ build-linux-substrate:             &build-binary
 
 pr-docker-build:            &pr-docker-build
   stage:                           build
-  <<:                              *build-binary
+  # <<:                              *build-binary
   tags: 
     - kubernetes-parity-build
   variables:
@@ -477,6 +477,7 @@ pr-docker-build:            &pr-docker-build
     - docker login -u "$DOCKER_CHAOS_USER" -p "$DOCKER_CHAOS_TOKEN"
     - docker info
   script:
+    - cd ./artifacts/$PRODUCT/
     - VERSION="CI-${CI_COMMIT_SHORT_SHA}"
     - echo "${PRODUCT} version = ${VERSION}"
     - test -z "${VERSION}" && exit 1
