@@ -459,6 +459,8 @@ pr-docker-build:            &pr-docker-build
   tags: 
     - kubernetes-parity-build
   variables:
+    DOCKER_HOST:                   tcp://localhost:2375
+    DOCKER_DRIVER:                 overlay2
     PRODUCT:                       substrate
     DOCKERFILE:                    $PRODUCT.Dockerfile
     CONTAINER_IMAGE:               paritypr/$PRODUCT
@@ -490,6 +492,8 @@ chaos-test-singlenodeheight:
   tags: 
     - kubernetes-parity-build
   variables:
+    DOCKER_HOST:                   tcp://localhost:2375
+    DOCKER_DRIVER:                 overlay2
     PRODUCT:                       substrate
     DOCKERFILE:                    $PRODUCT.Dockerfile
     CONTAINER_IMAGE:               paritypr/$PRODUCT
