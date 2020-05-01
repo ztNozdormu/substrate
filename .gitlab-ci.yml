@@ -456,6 +456,7 @@ build-linux-substrate:             &build-binary
 
 pr-docker-build:            &pr-docker-build
   stage:                           build
+  <<:                              *build-binary
   tags: 
     - kubernetes-parity-build
   variables:
