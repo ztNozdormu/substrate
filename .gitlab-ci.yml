@@ -92,6 +92,7 @@ variables:
 
 
 
+
 #### stage:                        test
 
 # check-runtime:
@@ -370,7 +371,7 @@ build-linux-substrate:             &build-binary
   stage:                           build
   <<:                              *collect-artifacts
   <<:                              *docker-env
-  <<:                              *build-only
+  # <<:                              *build-only
   before_script:
     - mkdir -p ./artifacts/substrate/
   except:
