@@ -1,18 +1,20 @@
-// Copyright 2018-2020 Parity Technologies (UK) Ltd.
 // This file is part of Substrate.
 
-// Substrate is free software: you can redistribute it and/or modify
+// Copyright (C) 2018-2020 Parity Technologies (UK) Ltd.
+// SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
+
+// This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Substrate is distributed in the hope that it will be useful,
+// This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Substrate.  If not, see <http://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Tests and test helpers for GRANDPA.
 
@@ -40,7 +42,7 @@ use parity_scale_codec::Decode;
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT, HashFor};
 use sp_runtime::generic::{BlockId, DigestItem};
 use sp_core::{H256, crypto::Public};
-use sp_finality_grandpa::{GRANDPA_ENGINE_ID, AuthorityList, GrandpaApi};
+use sp_finality_grandpa::{GRANDPA_ENGINE_ID, AuthorityList, EquivocationProof, GrandpaApi, OpaqueKeyOwnershipProof};
 use sp_state_machine::{InMemoryBackend, prove_read, read_proof_check};
 
 use authorities::AuthoritySet;
@@ -214,6 +216,20 @@ sp_api::mock_impl_runtime_apis! {
 		fn grandpa_authorities(&self) -> AuthorityList {
 			self.inner.genesis_authorities.clone()
 		}
+
+		fn submit_report_equivocation_extrinsic(
+			_equivocation_proof: EquivocationProof<Hash, BlockNumber>,
+			_key_owner_proof: OpaqueKeyOwnershipProof,
+		) -> Option<()> {
+			None
+		}
+
+		fn generate_key_ownership_proof(
+			_set_id: SetId,
+			_authority_id: AuthorityId,
+		) -> Option<OpaqueKeyOwnershipProof> {
+			None
+		}
 	}
 }
 
@@ -295,8 +311,6 @@ fn run_to_completion_with<F>(
 ) -> u64 where
 	F: FnOnce(Handle) -> Option<Pin<Box<dyn Future<Output = ()>>>>
 {
-	use parking_lot::RwLock;
-
 	let mut wait_for = Vec::new();
 
 	let highest_finalized = Arc::new(RwLock::new(0));
@@ -354,6 +368,7 @@ fn run_to_completion_with<F>(
 			telemetry_on_connect: None,
 			voting_rule: (),
 			prometheus_registry: None,
+			shared_voter_state: SharedVoterState::empty(),
 		};
 		let voter = run_grandpa_voter(grandpa_params).expect("all in order with client and network");
 
@@ -485,6 +500,7 @@ fn finalize_3_voters_1_full_observer() {
 			telemetry_on_connect: None,
 			voting_rule: (),
 			prometheus_registry: None,
+			shared_voter_state: SharedVoterState::empty(),
 		};
 
 		voters.push(run_grandpa_voter(grandpa_params).expect("all in order with client and network"));
@@ -648,6 +664,7 @@ fn transition_3_voters_twice_1_full_observer() {
 			telemetry_on_connect: None,
 			voting_rule: (),
 			prometheus_registry: None,
+			shared_voter_state: SharedVoterState::empty(),
 		};
 		let voter = run_grandpa_voter(grandpa_params).expect("all in order with client and network");
 
@@ -1072,6 +1089,7 @@ fn voter_persists_its_votes() {
 							telemetry_on_connect: None,
 							voting_rule: VotingRulesBuilder::default().build(),
 							prometheus_registry: None,
+							shared_voter_state: SharedVoterState::empty(),
 						};
 
 						let voter = run_grandpa_voter(grandpa_params)
@@ -1417,6 +1435,7 @@ fn voter_catches_up_to_latest_round_when_behind() {
 			telemetry_on_connect: None,
 			voting_rule: (),
 			prometheus_registry: None,
+			shared_voter_state: SharedVoterState::empty(),
 		};
 
 		Box::pin(run_grandpa_voter(grandpa_params).expect("all in order with client and network"))
@@ -1661,7 +1680,7 @@ fn imports_justification_for_regular_blocks_on_import() {
 		};
 
 		let msg = finality_grandpa::Message::Precommit(precommit.clone());
-		let encoded = communication::localized_payload(round, set_id, &msg);
+		let encoded = sp_finality_grandpa::localized_payload(round, set_id, &msg);
 		let signature = peers[0].sign(&encoded[..]).into();
 
 		let precommit = finality_grandpa::SignedPrecommit {

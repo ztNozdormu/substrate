@@ -1,18 +1,19 @@
-// Copyright 2019-2020 Parity Technologies (UK) Ltd.
 // This file is part of Substrate.
 
-// Substrate is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+// Copyright (C) 2019-2020 Parity Technologies (UK) Ltd.
+// SPDX-License-Identifier: Apache-2.0
 
-// Substrate is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-
-// You should have received a copy of the GNU General Public License
-// along with Substrate.  If not, see <http://www.gnu.org/licenses/>.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! # Utility Module
 //! A module with helpers for dispatch management.
@@ -205,16 +206,16 @@ mod weight_of {
 	use super::*;
 
 	/// - Base Weight:
-	///     - Create: 59.2 + 0.096 * S µs
-	///     - Approve: 42.27 + .116 * S µs
-	///     - Complete: 50.91 + .232 * S µs
+	///     - Create: 46.55 + 0.089 * S µs
+	///     - Approve: 34.03 + .112 * S µs
+	///     - Complete: 40.36 + .225 * S µs
 	/// - DB Weight:
 	///     - Reads: Multisig Storage, [Caller Account]
 	///     - Writes: Multisig Storage, [Caller Account]
 	/// - Plus Call Weight
 	pub fn as_multi<T: Trait>(other_sig_len: usize, call_weight: Weight) -> Weight {
 		call_weight
-			.saturating_add(60_000_000)
+			.saturating_add(45_000_000)
 			.saturating_add((other_sig_len as Weight).saturating_mul(250_000))
 			.saturating_add(T::DbWeight::get().reads_writes(1, 1))
 	}
@@ -236,7 +237,7 @@ decl_module! {
 		/// - `calls`: The calls to be dispatched from the same origin.
 		///
 		/// # <weight>
-		/// - Base weight: 15.64 + .987 * c µs
+		/// - Base weight: 14.39 + .987 * c µs
 		/// - Plus the sum of the weights of the `calls`.
 		/// - Plus one additional event. (repeat read/write)
 		/// # </weight>
@@ -280,7 +281,7 @@ decl_module! {
 		/// The dispatch origin for this call must be _Signed_.
 		///
 		/// # <weight>
-		/// - Base weight: 2.863 µs
+		/// - Base weight: 2.861 µs
 		/// - Plus the weight of the `call`
 		/// # </weight>
 		#[weight = FunctionOf(
@@ -339,9 +340,9 @@ decl_module! {
 		///   `MultisigDepositBase + threshold * MultisigDepositFactor`.
 		/// -------------------------------
 		/// - Base Weight:
-		///     - Create: 59.2 + 0.096 * S µs
-		///     - Approve: 42.27 + .116 * S µs
-		///     - Complete: 50.91 + .232 * S µs
+		///     - Create: 46.55 + 0.089 * S µs
+		///     - Approve: 34.03 + .112 * S µs
+		///     - Complete: 40.36 + .225 * S µs
 		/// - DB Weight:
 		///     - Reads: Multisig Storage, [Caller Account]
 		///     - Writes: Multisig Storage, [Caller Account]
@@ -471,8 +472,8 @@ decl_module! {
 		///   `MultisigDepositBase + threshold * MultisigDepositFactor`.
 		/// ----------------------------------
 		/// - Base Weight:
-		///     - Create: 56.3 + 0.107 * S
-		///     - Approve: 39.25 + 0.121 * S
+		///     - Create: 44.71 + 0.088 * S
+		///     - Approve: 31.48 + 0.116 * S
 		/// - DB Weight:
 		///     - Read: Multisig Storage, [Caller Account]
 		///     - Write: Multisig Storage, [Caller Account]
@@ -480,7 +481,7 @@ decl_module! {
 		#[weight = FunctionOf(
 			|args: (&u16, &Vec<T::AccountId>, &Option<Timepoint<T::BlockNumber>>, &[u8; 32])| {
 				T::DbWeight::get().reads_writes(1, 1)
-					.saturating_add(60_000_000)
+					.saturating_add(45_000_000)
 					.saturating_add((args.1.len() as Weight).saturating_mul(120_000))
 			},
 			DispatchClass::Normal,
@@ -554,7 +555,7 @@ decl_module! {
 		/// - I/O: 1 read `O(S)`, one remove.
 		/// - Storage: removes one item.
 		/// ----------------------------------
-		/// - Base Weight: 46.71 + 0.09 * S
+		/// - Base Weight: 37.6 + 0.084 * S
 		/// - DB Weight:
 		///     - Read: Multisig Storage, [Caller Account]
 		///     - Write: Multisig Storage, [Caller Account]
@@ -562,7 +563,7 @@ decl_module! {
 		#[weight = FunctionOf(
 			|args: (&u16, &Vec<T::AccountId>, &Timepoint<T::BlockNumber>, &[u8; 32])| {
 				T::DbWeight::get().reads_writes(1, 1)
-					.saturating_add(50_000_000)
+					.saturating_add(40_000_000)
 					.saturating_add((args.1.len() as Weight).saturating_mul(100_000))
 			},
 			DispatchClass::Normal,
