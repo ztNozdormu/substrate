@@ -16,18 +16,17 @@
 // limitations under the License.
 
 //! Fuzzing for staking pallet.
-//!
-//! HFUZZ_RUN_ARGS="-n 8" cargo hfuzz run submit_solution
 
 use honggfuzz::fuzz;
 
 use mock::Test;
-use pallet_staking::testing_utils::*;
+use pallet_staking::testing_utils::{
+	USER, get_seq_phragmen_solution, get_weak_solution, setup_chain_stakers,
+	set_validator_count, signed_account,
+};
 use frame_support::{assert_ok, storage::StorageValue};
-use frame_system::RawOrigin;
 use sp_runtime::{traits::Dispatchable, DispatchError};
 use sp_core::offchain::{testing::TestOffchainExt, OffchainExt};
-use pallet_staking::{EraElectionStatus, ElectionStatus, Module as Staking, Call as StakingCall};
 
 mod mock;
 
@@ -89,52 +88,47 @@ fn main() {
 
 			ext.execute_with(|| {
 				// initial setup
-				init_active_era();
-				assert_ok!(create_validators_with_nominators_for_era::<Test>(
+				set_validator_count::<Test>(to_elect);
+				pallet_staking::testing_utils::init_active_era();
+				setup_chain_stakers::<Test>(
 					num_validators,
 					num_nominators,
-					edge_per_voter as usize,
-					true,
-					None,
-				));
-				<EraElectionStatus<Test>>::put(ElectionStatus::Open(1));
-				assert!(<Staking<Test>>::create_stakers_snapshot().0);
-				let origin = RawOrigin::Signed(create_funded_user::<Test>("fuzzer", 0, 100));
+					edge_per_voter,
+				);
+				<pallet_staking::EraElectionStatus<Test>>::put(pallet_staking::ElectionStatus::Open(1));
 
 				println!("++ Chain setup done.");
 
 				// stuff to submit
-				let (winners, compact, score, size) = match mode {
+				let (winners, compact, score) = match mode {
 					Mode::InitialSubmission => {
 						/* No need to setup anything */
 						get_seq_phragmen_solution::<Test>(do_reduce)
 					},
 					Mode::StrongerSubmission => {
-						let (winners, compact, score, size) = get_weak_solution::<Test>(false);
+						let (winners, compact, score) = get_weak_solution::<Test>(false);
 						println!("Weak on chain score = {:?}", score);
 						assert_ok!(
-							<Staking<Test>>::submit_election_solution(
-								origin.clone().into(),
+							<pallet_staking::Module<Test>>::submit_election_solution(
+								signed_account::<Test>(USER),
 								winners,
 								compact,
 								score,
-								current_era::<Test>(),
-								size,
+								pallet_staking::testing_utils::active_era::<Test>(),
 							)
 						);
 						get_seq_phragmen_solution::<Test>(do_reduce)
 					},
 					Mode::WeakerSubmission => {
-						let (winners, compact, score, size) = get_seq_phragmen_solution::<Test>(do_reduce);
+						let (winners, compact, score) = get_seq_phragmen_solution::<Test>(do_reduce);
 						println!("Strong on chain score = {:?}", score);
 						assert_ok!(
-							<Staking<Test>>::submit_election_solution(
-								origin.clone().into(),
+							<pallet_staking::Module<Test>>::submit_election_solution(
+								signed_account::<Test>(USER),
 								winners,
 								compact,
 								score,
-								current_era::<Test>(),
-								size,
+								pallet_staking::testing_utils::active_era::<Test>(),
 							)
 						);
 						get_weak_solution::<Test>(false)
@@ -144,34 +138,27 @@ fn main() {
 				println!("++ Submission ready. Score = {:?}", score);
 
 				// must have chosen correct number of winners.
-				assert_eq!(winners.len() as u32, <Staking<Test>>::validator_count());
+				assert_eq!(winners.len() as u32, <pallet_staking::Module<Test>>::validator_count());
 
 				// final call and origin
-				let call = StakingCall::<Test>::submit_election_solution(
+				let call = pallet_staking::Call::<Test>::submit_election_solution(
 					winners,
 					compact,
 					score,
-					current_era::<Test>(),
-					size,
+					pallet_staking::testing_utils::active_era::<Test>(),
 				);
+				let caller = signed_account::<Test>(USER);
 
 				// actually submit
 				match mode {
 					Mode::WeakerSubmission => {
 						assert_eq!(
-							call.dispatch(origin.clone().into()).unwrap_err().error,
-							DispatchError::Module {
-								index: 0,
-								error: 16,
-								message: Some("PhragmenWeakSubmission"),
-							},
+							call.dispatch(caller.into()).unwrap_err().error,
+							DispatchError::Module { index: 0, error: 16, message: Some("PhragmenWeakSubmission") },
 						);
 					},
-					// NOTE: so exhaustive pattern doesn't work here.. maybe some rust issue?
-					// or due to `#[repr(u32)]`?
-					Mode::InitialSubmission | Mode::StrongerSubmission => {
-						assert_ok!(call.dispatch(origin.into()));
-					}
+					// NOTE: so exhaustive pattern doesn't work here.. maybe some rust issue? or due to `#[repr(u32)]`?
+					Mode::InitialSubmission | Mode::StrongerSubmission => assert!(call.dispatch(caller.into()).is_ok()),
 				};
 			})
 		});

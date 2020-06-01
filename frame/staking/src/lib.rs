@@ -272,7 +272,7 @@
 mod mock;
 #[cfg(test)]
 mod tests;
-#[cfg(any(feature = "runtime-benchmarks", test))]
+#[cfg(feature = "testing-utils")]
 pub mod testing_utils;
 #[cfg(any(feature = "runtime-benchmarks", test))]
 pub mod benchmarking;
@@ -290,10 +290,10 @@ use sp_std::{
 };
 use codec::{HasCompact, Encode, Decode};
 use frame_support::{
-	decl_module, decl_event, decl_storage, ensure, decl_error,
+	decl_module, decl_event, decl_storage, ensure, decl_error, debug,
 	weights::{Weight, constants::{WEIGHT_PER_MICROS, WEIGHT_PER_NANOS}},
 	storage::IterableStorageMap,
-	dispatch::{IsSubType, DispatchResult, DispatchResultWithPostInfo, WithPostDispatchInfo},
+	dispatch::{IsSubType, DispatchResult, DispatchResultWithPostInfo},
 	traits::{
 		Currency, LockIdentifier, LockableCurrency, WithdrawReasons, OnUnbalanced, Imbalance, Get,
 		UnixTime, EstimateNextNewSession, EnsureOrigin,
@@ -332,14 +332,13 @@ const STAKING_ID: LockIdentifier = *b"staking ";
 pub const MAX_UNLOCKING_CHUNKS: usize = 32;
 pub const MAX_NOMINATIONS: usize = <CompactAssignments as VotingLimit>::LIMIT;
 
-pub(crate) const LOG_TARGET: &'static str = "staking";
-
-// syntactic sugar for logging.
-#[macro_export]
+// syntactic sugar for logging
+#[cfg(feature = "std")]
+const LOG_TARGET: &'static str = "staking";
 macro_rules! log {
 	($level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
-		frame_support::debug::$level!(
-			target: crate::LOG_TARGET,
+		debug::native::$level!(
+			target: LOG_TARGET,
 			$patter $(, $values)*
 		)
 	};
@@ -373,7 +372,7 @@ generate_compact_solution_type!(pub GenericCompactAssignments, 16);
 pub struct ActiveEraInfo {
 	/// Index of era.
 	pub index: EraIndex,
-	/// Moment of start expressed as millisecond from `$UNIX_EPOCH`.
+	/// Moment of start expresed as millisecond from `$UNIX_EPOCH`.
 	///
 	/// Start can be none if start hasn't been set for the era yet,
 	/// Start is set on the first on_finalize of the era to guarantee usage of `Time`.
@@ -681,22 +680,6 @@ pub enum ElectionStatus<BlockNumber> {
 	Open(BlockNumber),
 }
 
-/// Some indications about the size of the election. This must be submitted with the solution.
-///
-/// Note that these values must reflect the __total__ number, not only those that are present in the
-/// solution. In short, these should be the same size as the size of the values dumped in
-/// `SnapshotValidators` and `SnapshotNominators`.
-#[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, Default)]
-pub struct ElectionSize {
-	/// Number of validators in the snapshot of the current election round.
-	#[codec(compact)]
-	pub validators: ValidatorIndex,
-	/// Number of nominators in the snapshot of the current election round.
-	#[codec(compact)]
-	pub nominators: NominatorIndex,
-}
-
-
 impl<BlockNumber: PartialEq> ElectionStatus<BlockNumber> {
 	fn is_open_at(&self, n: BlockNumber) -> bool {
 		*self == Self::Open(n)
@@ -757,72 +740,6 @@ impl<T: Trait> SessionInterface<<T as frame_system::Trait>::AccountId> for T whe
 
 	fn prune_historical_up_to(up_to: SessionIndex) {
 		<pallet_session::historical::Module<T>>::prune_up_to(up_to);
-	}
-}
-
-pub mod weight {
-	use super::*;
-
-	/// All weight notes are pertaining to the case of a better solution, in which we execute
-	/// the longest code path.
-	/// Weight: 0 + (0.63 μs * v) + (0.36 μs * n) + (96.53 μs * a ) + (8 μs * w ) with:
-	/// * v validators in snapshot validators,
-	/// * n nominators in snapshot nominators,
-	/// * a assignment in the submitted solution
-	/// * w winners in the submitted solution
-	///
-	/// State reads:
-	/// 	- Initial checks:
-	/// 		- ElectionState, CurrentEra, QueuedScore
-	/// 		- SnapshotValidators.len() + SnapShotNominators.len()
-	/// 		- ValidatorCount
-	/// 		- SnapshotValidators
-	/// 		- SnapshotNominators
-	/// 	- Iterate over nominators:
-	/// 		- compact.len() * Nominators(who)
-	/// 		- (non_self_vote_edges) * SlashingSpans
-	/// 	- For `assignment_ratio_to_staked`: Basically read the staked value of each stash.
-	/// 		- (winners.len() + compact.len()) * (Ledger + Bonded)
-	/// 		- TotalIssuance (read a gzillion times potentially, but well it is cached.)
-	/// - State writes:
-	/// 	- QueuedElected, QueuedScore
-	pub fn weight_for_submit_solution<T: Trait>(
-		winners: &Vec<ValidatorIndex>,
-		compact: &CompactAssignments,
-		size: &ElectionSize,
-	) -> Weight {
-		(630 * WEIGHT_PER_NANOS).saturating_mul(size.validators as Weight)
-			.saturating_add((360 * WEIGHT_PER_NANOS).saturating_mul(size.nominators as Weight))
-			.saturating_add((96 * WEIGHT_PER_MICROS).saturating_mul(compact.len() as Weight))
-			.saturating_add((8 * WEIGHT_PER_MICROS).saturating_mul(winners.len() as Weight))
-			// Initial checks
-			.saturating_add(T::DbWeight::get().reads(8))
-			// Nominators
-			.saturating_add(T::DbWeight::get().reads(compact.len() as Weight))
-			// SlashingSpans (upper bound for invalid solution)
-			.saturating_add(T::DbWeight::get().reads(compact.edge_count() as Weight))
-			// `assignment_ratio_to_staked`
-			.saturating_add(T::DbWeight::get().reads(2 * ((winners.len() + compact.len()) as Weight)))
-			.saturating_add(T::DbWeight::get().reads(1))
-			// write queued score and elected
-			.saturating_add(T::DbWeight::get().writes(2))
-	}
-
-	/// Weight of `submit_solution` in case of a correct submission.
-	///
-	/// refund: we charged compact.len() * read(1) for SlashingSpans. A valid solution only reads
-	/// winners.len().
-	pub fn weight_for_correct_submit_solution<T: Trait>(
-		winners: &Vec<ValidatorIndex>,
-		compact: &CompactAssignments,
-		size: &ElectionSize,
-	) -> Weight {
-		// NOTE: for consistency, we re-compute the original weight to maintain their relation and
-		// prevent any foot-guns.
-		let original_weight = weight_for_submit_solution::<T>(winners, compact, size);
-		original_weight
-			.saturating_sub(T::DbWeight::get().reads(compact.edge_count() as Weight))
-			.saturating_add(T::DbWeight::get().reads(winners.len() as Weight))
 	}
 }
 
@@ -1173,8 +1090,6 @@ decl_event!(
 		OldSlashingReportDiscarded(SessionIndex),
 		/// A new set of stakers was elected with the given computation method.
 		StakingElection(ElectionCompute),
-		/// A new solution for the upcoming election has been stored.
-		SolutionStored(ElectionCompute),
 		/// An account has bonded this amount.
 		///
 		/// NOTE: This event is only emitted when funds are bonded via a dispatchable. Notably,
@@ -1248,8 +1163,6 @@ decl_error! {
 		PhragmenBogusEdge,
 		/// The claimed score does not match with the one computed from the data.
 		PhragmenBogusScore,
-		/// The election size is invalid.
-		PhragmenBogusElectionSize,
 		/// The call is not allowed at the given time due to restrictions of election period.
 		CallNotAllowed,
 		/// Incorrect previous history depth input provided.
@@ -1288,7 +1201,7 @@ decl_module! {
 				// either current session final based on the plan, or we're forcing.
 				(Self::is_current_session_final() || Self::will_era_be_forced())
 			{
-				if let Some(next_session_change) = T::NextNewSession::estimate_next_new_session(now) {
+				if let Some(next_session_change) = T::NextNewSession::estimate_next_new_session(now){
 					if let Some(remaining) = next_session_change.checked_sub(&now) {
 						if remaining <= T::ElectionLookahead::get() && !remaining.is_zero() {
 							// create snapshot.
@@ -1330,7 +1243,7 @@ decl_module! {
 					log!(debug, "skipping offchain worker in open election window due to [{}]", why);
 				} else {
 					if let Err(e) = compute_offchain_election::<T>() {
-						log!(error, "💸 Error in phragmen offchain worker: {:?}", e);
+						log!(warn, "💸 Error in phragmen offchain worker: {:?}", e);
 					} else {
 						log!(debug, "Executed offchain worker thread without errors.");
 					}
@@ -2150,26 +2063,51 @@ decl_module! {
 		///    minimized (to ensure less variance)
 		///
 		/// # <weight>
-		/// See `crate::weight` module.
+		/// E: number of edges. m: size of winner committee. n: number of nominators. d: edge degree
+		/// (16 for now) v: number of on-chain validator candidates.
+		///
+		/// NOTE: given a solution which is reduced, we can enable a new check the ensure `|E| < n +
+		/// m`. We don't do this _yet_, but our offchain worker code executes it nonetheless.
+		///
+		/// major steps (all done in `check_and_replace_solution`):
+		///
+		/// - Storage: O(1) read `ElectionStatus`.
+		/// - Storage: O(1) read `PhragmenScore`.
+		/// - Storage: O(1) read `ValidatorCount`.
+		/// - Storage: O(1) length read from `SnapshotValidators`.
+		///
+		/// - Storage: O(v) reads of `AccountId` to fetch `snapshot_validators`.
+		/// - Memory: O(m) iterations to map winner index to validator id.
+		/// - Storage: O(n) reads `AccountId` to fetch `snapshot_nominators`.
+		/// - Memory: O(n + m) reads to map index to `AccountId` for un-compact.
+		///
+		/// - Storage: O(e) accountid reads from `Nomination` to read correct nominations.
+		/// - Storage: O(e) calls into `slashable_balance_of_vote_weight` to convert ratio to staked.
+		///
+		/// - Memory: build_support_map. O(e).
+		/// - Memory: evaluate_support: O(E).
+		///
+		/// - Storage: O(e) writes to `QueuedElected`.
+		/// - Storage: O(1) write to `QueuedScore`
+		///
+		/// The weight of this call is 1/10th of the blocks total weight.
 		/// # </weight>
-		#[weight = weight::weight_for_submit_solution::<T>(winners, compact, size)]
+		#[weight = 100_000_000_000]
 		pub fn submit_election_solution(
 			origin,
 			winners: Vec<ValidatorIndex>,
-			compact: CompactAssignments,
+			compact_assignments: CompactAssignments,
 			score: PhragmenScore,
 			era: EraIndex,
-			size: ElectionSize,
-		) -> DispatchResultWithPostInfo {
+		) {
 			let _who = ensure_signed(origin)?;
 			Self::check_and_replace_solution(
 				winners,
-				compact,
+				compact_assignments,
 				ElectionCompute::Signed,
 				score,
 				era,
-				size,
-			)
+			)?
 		}
 
 		/// Unsigned version of `submit_election_solution`.
@@ -2177,28 +2115,22 @@ decl_module! {
 		/// Note that this must pass the [`ValidateUnsigned`] check which only allows transactions
 		/// from the local node to be included. In other words, only the block author can include a
 		/// transaction in the block.
-		///
-		/// # <weight>
-		/// See `crate::weight` module.
-		/// # </weight>
-		#[weight = weight::weight_for_submit_solution::<T>(winners, compact, size)]
+		#[weight = 100_000_000_000]
 		pub fn submit_election_solution_unsigned(
 			origin,
 			winners: Vec<ValidatorIndex>,
-			compact: CompactAssignments,
+			compact_assignments: CompactAssignments,
 			score: PhragmenScore,
 			era: EraIndex,
-			size: ElectionSize,
-		) -> DispatchResultWithPostInfo {
+		) {
 			ensure_none(origin)?;
 			Self::check_and_replace_solution(
 				winners,
-				compact,
+				compact_assignments,
 				ElectionCompute::Unsigned,
 				score,
 				era,
-				size,
-			)
+			)?
 			// TODO: instead of returning an error, panic. This makes the entire produced block
 			// invalid.
 			// This ensures that block authors will not ever try and submit a solution which is not
@@ -2210,7 +2142,6 @@ decl_module! {
 impl<T: Trait> Module<T> {
 	/// The total balance that can be slashed from a stash account as of right now.
 	pub fn slashable_balance_of(stash: &T::AccountId) -> BalanceOf<T> {
-		// Weight note: consider making the stake accessible through stash.
 		Self::bonded(stash).and_then(Self::ledger).map(|l| l.active).unwrap_or_default()
 	}
 
@@ -2225,7 +2156,7 @@ impl<T: Trait> Module<T> {
 	///
 	/// This data is used to efficiently evaluate election results. returns `true` if the operation
 	/// is successful.
-	pub fn create_stakers_snapshot() -> (bool, Weight) {
+	fn create_stakers_snapshot() -> (bool, Weight) {
 		let mut consumed_weight = 0;
 		let mut add_db_reads_writes = |reads, writes| {
 			consumed_weight += T::DbWeight::get().reads_writes(reads, writes);
@@ -2569,19 +2500,16 @@ impl<T: Trait> Module<T> {
 				Forcing::ForceAlways => (),
 				Forcing::NotForcing if era_length >= T::SessionsPerEra::get() => (),
 				_ => {
-					// Either `ForceNone`, or `NotForcing && era_length < T::SessionsPerEra::get()`.
-					if era_length + 1 == T::SessionsPerEra::get() {
+					// not forcing, not a new era either. If final, set the flag.
+					if era_length + 1 >= T::SessionsPerEra::get() {
 						IsCurrentSessionFinal::put(true);
-					} else if era_length >= T::SessionsPerEra::get() {
-						// Should only happen when we are ready to trigger an era but we have ForceNone,
-						// otherwise previous arm would short circuit.
-						Self::close_election_window();
 					}
 					return None
 				},
 			}
 
 			// new era.
+			IsCurrentSessionFinal::put(false);
 			Self::new_era(session_index)
 		} else {
 			// Set initial era
@@ -2590,24 +2518,19 @@ impl<T: Trait> Module<T> {
 	}
 
 	/// Basic and cheap checks that we perform in validate unsigned, and in the execution.
-	///
-	/// State reads: ElectionState, CurrentEr, QueuedScore.
-	///
-	/// This function does weight refund in case of errors, which is based upon the fact that it is
-	/// called at the very beginning of the call site's function.
-	pub fn pre_dispatch_checks(score: PhragmenScore, era: EraIndex) -> DispatchResultWithPostInfo {
+	pub fn pre_dispatch_checks(score: PhragmenScore, era: EraIndex) -> Result<(), Error<T>> {
 		// discard solutions that are not in-time
 		// check window open
 		ensure!(
 			Self::era_election_status().is_open(),
-			Error::<T>::PhragmenEarlySubmission.with_weight(T::DbWeight::get().reads(1)),
+			Error::<T>::PhragmenEarlySubmission,
 		);
 
 		// check current era.
 		if let Some(current_era) = Self::current_era() {
 			ensure!(
 				current_era == era,
-				Error::<T>::PhragmenEarlySubmission.with_weight(T::DbWeight::get().reads(2)),
+				Error::<T>::PhragmenEarlySubmission,
 			)
 		}
 
@@ -2615,11 +2538,11 @@ impl<T: Trait> Module<T> {
 		if let Some(queued_score) = Self::queued_score() {
 			ensure!(
 				is_score_better(queued_score, score),
-				Error::<T>::PhragmenWeakSubmission.with_weight(T::DbWeight::get().reads(3)),
+				Error::<T>::PhragmenWeakSubmission,
 			)
 		}
 
-		Ok(None.into())
+		Ok(())
 	}
 
 	/// Checks a given solution and if correct and improved, writes it on chain as the queued result
@@ -2630,45 +2553,20 @@ impl<T: Trait> Module<T> {
 		compute: ElectionCompute,
 		claimed_score: PhragmenScore,
 		era: EraIndex,
-		election_size: ElectionSize,
-	) -> DispatchResultWithPostInfo {
+	) -> Result<(), Error<T>> {
 		// Do the basic checks. era, claimed score and window open.
 		Self::pre_dispatch_checks(claimed_score, era)?;
-		// the weight that we will refund in case of a correct submission. We compute this now
-		// because the data needed for it will be consumed further down.
-		let adjusted_weight = weight::weight_for_correct_submit_solution::<T>(
-			&winners,
-			&compact_assignments,
-			&election_size,
-		);
 
 		// Check that the number of presented winners is sane. Most often we have more candidates
-		// than we need. Then it should be `Self::validator_count()`. Else it should be all the
+		// that we need. Then it should be Self::validator_count(). Else it should be all the
 		// candidates.
-		let snapshot_validators_length = <SnapshotValidators<T>>::decode_len()
-			.map(|l| l as u32)
+		let snapshot_length = <SnapshotValidators<T>>::decode_len()
 			.ok_or_else(|| Error::<T>::SnapshotUnavailable)?;
-
-		// size of the solution must be correct.
-		ensure!(
-			snapshot_validators_length == u32::from(election_size.validators),
-			Error::<T>::PhragmenBogusElectionSize,
-		);
 
 		// check the winner length only here and when we know the length of the snapshot validators
 		// length.
-		let desired_winners = Self::validator_count().min(snapshot_validators_length);
+		let desired_winners = Self::validator_count().min(snapshot_length as u32);
 		ensure!(winners.len() as u32 == desired_winners, Error::<T>::PhragmenBogusWinnerCount);
-
-		let snapshot_nominators_len = <SnapshotNominators<T>>::decode_len()
-			.map(|l| l as u32)
-			.ok_or_else(|| Error::<T>::SnapshotUnavailable)?;
-
-		// rest of the size of the solution must be correct.
-		ensure!(
-			snapshot_nominators_len == election_size.nominators,
-			Error::<T>::PhragmenBogusElectionSize,
-		);
 
 		// decode snapshot validators.
 		let snapshot_validators = Self::snapshot_validators()
@@ -2683,7 +2581,7 @@ impl<T: Trait> Module<T> {
 		}).collect::<Result<Vec<T::AccountId>, Error<T>>>()?;
 
 		// decode the rest of the snapshot.
-		let snapshot_nominators = Self::snapshot_nominators()
+		let snapshot_nominators = <Module<T>>::snapshot_nominators()
 			.ok_or(Error::<T>::SnapshotUnavailable)?;
 
 		// helpers
@@ -2717,7 +2615,7 @@ impl<T: Trait> Module<T> {
 				// have bigger problems.
 				log!(error, "💸 detected an error in the staking locking and snapshot.");
 				// abort.
-				return Err(Error::<T>::PhragmenBogusNominator.into());
+				return Err(Error::<T>::PhragmenBogusNominator);
 			}
 
 			if !is_validator {
@@ -2734,14 +2632,14 @@ impl<T: Trait> Module<T> {
 					// each target in the provided distribution must be actually nominated by the
 					// nominator after the last non-zero slash.
 					if nomination.targets.iter().find(|&tt| tt == t).is_none() {
-						return Err(Error::<T>::PhragmenBogusNomination.into());
+						return Err(Error::<T>::PhragmenBogusNomination);
 					}
 
 					if <Self as Store>::SlashingSpans::get(&t).map_or(
 						false,
 						|spans| nomination.submitted_in < spans.last_nonzero_slash(),
 					) {
-						return Err(Error::<T>::PhragmenSlashedNomination.into());
+						return Err(Error::<T>::PhragmenSlashedNomination);
 					}
 				}
 			} else {
@@ -2781,9 +2679,8 @@ impl<T: Trait> Module<T> {
 		let exposures = Self::collect_exposure(supports);
 		log!(
 			info,
-			"💸 A better solution (with compute {:?} and score {:?}) has been validated and stored on chain.",
+			"💸 A better solution (with compute {:?}) has been validated and stored on chain.",
 			compute,
-			submitted_score,
 		);
 
 		// write new results.
@@ -2794,10 +2691,8 @@ impl<T: Trait> Module<T> {
 		});
 		QueuedScore::put(submitted_score);
 
-		// emit event.
-		Self::deposit_event(RawEvent::SolutionStored(compute));
+		Ok(())
 
-		Ok(Some(adjusted_weight).into())
 	}
 
 	/// Start a session potentially starting an era.
@@ -2915,17 +2810,6 @@ impl<T: Trait> Module<T> {
 		maybe_new_validators
 	}
 
-
-	/// Remove all the storage items associated with the election.
-	fn close_election_window() {
-		// Close window.
-		<EraElectionStatus<T>>::put(ElectionStatus::Closed);
-		// Kill snapshots.
-		Self::kill_stakers_snapshot();
-		// Don't track final session.
-		IsCurrentSessionFinal::put(false);
-	}
-
 	/// Select the new validator set at the end of the era.
 	///
 	/// Runs [`try_do_phragmen`] and updates the following storage items:
@@ -2947,8 +2831,11 @@ impl<T: Trait> Module<T> {
 			exposures,
 			compute,
 		}) = Self::try_do_phragmen() {
-			// Totally close the election round and data.
-			Self::close_election_window();
+			// We have chosen the new validator set. Submission is no longer allowed.
+			<EraElectionStatus<T>>::put(ElectionStatus::Closed);
+
+			// kill the snapshots.
+			Self::kill_stakers_snapshot();
 
 			// Populate Stakers and write slot stake.
 			let mut total_stake: BalanceOf<T> = Zero::zero();
@@ -3109,7 +2996,7 @@ impl<T: Trait> Module<T> {
 
 		supports.into_iter().map(|(validator, support)| {
 			// build `struct exposure` from `support`
-			let mut others = Vec::with_capacity(support.voters.len());
+			let mut others = Vec::new();
 			let mut own: BalanceOf<T> = Zero::zero();
 			let mut total: BalanceOf<T> = Zero::zero();
 			support.voters
@@ -3494,6 +3381,12 @@ impl<T, Reporter, Offender, R, O> ReportOffence<Reporter, Offender, O>
 	}
 }
 
+impl<T: Trait> From<Error<T>> for InvalidTransaction {
+	fn from(e: Error<T>) -> Self {
+		InvalidTransaction::Custom(e.as_u8())
+	}
+}
+
 #[allow(deprecated)]
 impl<T: Trait> frame_support::unsigned::ValidateUnsigned for Module<T> {
 	type Call = Call<T>;
@@ -3503,10 +3396,8 @@ impl<T: Trait> frame_support::unsigned::ValidateUnsigned for Module<T> {
 			_,
 			score,
 			era,
-			_,
 		) = call {
 			use offchain_election::DEFAULT_LONGEVITY;
-			use sp_runtime::DispatchError;
 
 			// discard solution not coming from the local OCW.
 			match source {
@@ -3517,18 +3408,9 @@ impl<T: Trait> frame_support::unsigned::ValidateUnsigned for Module<T> {
 				}
 			}
 
-			if let Err(error_with_post_info) = Self::pre_dispatch_checks(*score, *era) {
-				let error = error_with_post_info.error;
-				let error_number = match error {
-					DispatchError::Module { error, ..} => error,
-					_ => 0,
-				};
-				log!(
-					debug,
-					"validate unsigned pre dispatch checks failed due to module error #{:?}.",
-					error,
-				);
-				return InvalidTransaction::Custom(error_number).into();
+			if let Err(e) = Self::pre_dispatch_checks(*score, *era) {
+				log!(debug, "validate unsigned pre dispatch checks failed due to {:?}.", e);
+				return InvalidTransaction::from(e).into();
 			}
 
 			log!(debug, "validateUnsigned succeeded for a solution at era {}.", era);

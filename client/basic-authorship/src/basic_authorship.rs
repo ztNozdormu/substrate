@@ -91,14 +91,16 @@ impl<B, Block, C, A> ProposerFactory<A, B, C>
 		info!("🙌 Starting consensus session on top of parent {:?}", parent_hash);
 
 		let proposer = Proposer {
-			client: self.client.clone(),
-			parent_hash,
-			parent_id: id,
-			parent_number: *parent_header.number(),
-			transaction_pool: self.transaction_pool.clone(),
-			now,
-			metrics: self.metrics.clone(),
-			_phantom: PhantomData,
+			inner: Arc::new(ProposerInner {
+				client: self.client.clone(),
+				parent_hash,
+				parent_id: id,
+				parent_number: *parent_header.number(),
+				transaction_pool: self.transaction_pool.clone(),
+				now,
+				metrics: self.metrics.clone(),
+				_phantom: PhantomData,
+			}),
 		};
 
 		proposer
@@ -130,6 +132,11 @@ impl<A, B, Block, C> sp_consensus::Environment<Block> for
 
 /// The proposer logic.
 pub struct Proposer<B, Block: BlockT, C, A: TransactionPool> {
+	inner: Arc<ProposerInner<B, Block, C, A>>,
+}
+
+/// Proposer inner, to wrap parameters under Arc.
+struct ProposerInner<B, Block: BlockT, C, A: TransactionPool> {
 	client: Arc<C>,
 	parent_hash: <Block as BlockT>::Hash,
 	parent_id: BlockId<Block>,
@@ -158,21 +165,22 @@ impl<A, B, Block, C> sp_consensus::Proposer<Block> for
 	type Error = sp_blockchain::Error;
 
 	fn propose(
-		self,
+		&mut self,
 		inherent_data: InherentData,
 		inherent_digests: DigestFor<Block>,
 		max_duration: time::Duration,
 		record_proof: RecordProof,
 	) -> Self::Proposal {
+		let inner = self.inner.clone();
 		tokio_executor::blocking::run(move || {
 			// leave some time for evaluation and block finalization (33%)
-			let deadline = (self.now)() + max_duration - max_duration / 3;
-			self.propose_with(inherent_data, inherent_digests, deadline, record_proof)
+			let deadline = (inner.now)() + max_duration - max_duration / 3;
+			inner.propose_with(inherent_data, inherent_digests, deadline, record_proof)
 		})
 	}
 }
 
-impl<A, B, Block, C> Proposer<B, Block, C, A>
+impl<A, B, Block, C> ProposerInner<B, Block, C, A>
 	where
 		A: TransactionPool<Block = Block>,
 		B: backend::Backend<Block> + Send + Sync + 'static,
@@ -183,7 +191,7 @@ impl<A, B, Block, C> Proposer<B, Block, C, A>
 			+ BlockBuilderApi<Block, Error = sp_blockchain::Error>,
 {
 	fn propose_with(
-		self,
+		&self,
 		inherent_data: InherentData,
 		inherent_digests: DigestFor<Block>,
 		deadline: time::Instant,
@@ -391,7 +399,7 @@ mod tests {
 		let mut proposer_factory = ProposerFactory::new(client.clone(), txpool.clone(), None);
 
 		let cell = Mutex::new((false, time::Instant::now()));
-		let proposer = proposer_factory.init_with_now(
+		let mut proposer = proposer_factory.init_with_now(
 			&client.header(&BlockId::number(0)).unwrap().unwrap(),
 			Box::new(move || {
 				let mut value = cell.lock();
@@ -432,7 +440,7 @@ mod tests {
 		let mut proposer_factory = ProposerFactory::new(client.clone(), txpool.clone(), None);
 
 		let cell = Mutex::new((false, time::Instant::now()));
-		let proposer = proposer_factory.init_with_now(
+		let mut proposer = proposer_factory.init_with_now(
 			&client.header(&BlockId::number(0)).unwrap().unwrap(),
 			Box::new(move || {
 				let mut value = cell.lock();
@@ -481,7 +489,7 @@ mod tests {
 
 		let mut proposer_factory = ProposerFactory::new(client.clone(), txpool.clone(), None);
 
-		let proposer = proposer_factory.init_with_now(
+		let mut proposer = proposer_factory.init_with_now(
 			&client.header(&block_id).unwrap().unwrap(),
 			Box::new(move || time::Instant::now()),
 		);
@@ -552,7 +560,7 @@ mod tests {
 			expected_block_extrinsics,
 			expected_pool_transactions,
 		| {
-			let proposer = proposer_factory.init_with_now(
+			let mut proposer = proposer_factory.init_with_now(
 				&client.header(&BlockId::number(number)).unwrap().unwrap(),
 				Box::new(move || time::Instant::now()),
 			);

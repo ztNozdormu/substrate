@@ -672,8 +672,6 @@ mod compact {
 			compact,
 			Decode::decode(&mut &encoded[..]).unwrap(),
 		);
-		assert_eq!(compact.len(), 4);
-		assert_eq!(compact.edge_count(), 2 + 4);
 	}
 
 	fn basic_ratio_test_with<V, T>() where
@@ -748,13 +746,6 @@ mod compact {
 			voter_index,
 			target_index,
 		).unwrap();
-
-		// basically number of assignments that it is encoding.
-		assert_eq!(compacted.len(), assignments.len());
-		assert_eq!(
-			compacted.edge_count(),
-			assignments.iter().fold(0, |a, b| a + b.distribution.len()),
-		);
 
 		assert_eq!(
 			compacted,
@@ -853,11 +844,6 @@ mod compact {
 			voter_index,
 			target_index,
 		).unwrap();
-		assert_eq!(compacted.len(), assignments.len());
-		assert_eq!(
-			compacted.edge_count(),
-			assignments.iter().fold(0, |a, b| a + b.distribution.len()),
-		);
 
 		assert_eq!(
 			compacted,

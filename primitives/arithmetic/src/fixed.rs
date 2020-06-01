@@ -75,11 +75,6 @@ pub trait FixedPointNumber:
 	/// Consumes `self` and returns the inner raw value.
 	fn into_inner(self) -> Self::Inner;
 
-	/// Returns the negation.
-	fn negate(self) -> Self {
-		Self::from_inner(-self.into_inner())
-	}
-
 	/// Creates self from an integer number `int`.
 	///
 	/// Returns `Self::max` or `Self::min` if `int` exceeds accuracy.
@@ -168,11 +163,7 @@ pub trait FixedPointNumber:
 	///
 	/// Returns `N::min` or `N::max` if the multiplication or final result does not fit in `N`.
 	fn saturating_mul_acc_int<N: FixedPointOperand>(self, n: N) -> N {
-		if self.is_negative() && n > N::zero() {
-			n.saturating_sub(self.negate().saturating_mul_int(n))
-		} else {
-			self.saturating_mul_int(n).saturating_add(n)
-		}
+		self.saturating_mul_int(n).saturating_add(n)
 	}
 
 	/// Saturating absolute value.
@@ -669,6 +660,13 @@ macro_rules! implement_fixed {
 			}
 
 			#[test]
+			#[should_panic(expected = "attempt to negate with overflow")]
+			fn op_neg_panics() {
+				let a = $name::min_value();
+				let _ = -a;
+			}
+
+			#[test]
 			fn op_neg_works() {
 				let a = $name::saturating_from_integer(5);
 				let b = -a;
@@ -702,10 +700,11 @@ macro_rules! implement_fixed {
 			}
 
 			#[test]
-			fn op_checked_add_overflow_works() {
+			#[should_panic(expected = "attempt to add with overflow")]
+			fn op_add_panics() {
 				let a = $name::max_value();
 				let b = 1.into();
-				assert!(a.checked_add(&b).is_none());
+				let _ = a + b;
 			}
 
 			#[test]
@@ -723,10 +722,11 @@ macro_rules! implement_fixed {
 			}
 
 			#[test]
-			fn op_checked_sub_underflow_works() {
+			#[should_panic(expected = "attempt to subtract with overflow")]
+			fn op_sub_panics() {
 				let a = $name::min_value();
 				let b = 1.into();
-				assert!(a.checked_sub(&b).is_none());
+				let _c = a - b;
 			}
 
 			#[test]
@@ -744,10 +744,11 @@ macro_rules! implement_fixed {
 			}
 
 			#[test]
-			fn op_checked_mul_overflow_works() {
+			#[should_panic(expected = "attempt to multiply with overflow")]
+			fn op_mul_panics() {
 				let a = $name::max_value();
 				let b = 2.into();
-				assert!(a.checked_mul(&b).is_none());
+				let _c = a * b;
 			}
 
 			#[test]
@@ -770,10 +771,11 @@ macro_rules! implement_fixed {
 			}
 
 			#[test]
-			fn op_checked_div_overflow_works() {
+			#[should_panic(expected = "attempt to divide with overflow")]
+			fn op_div_panics_on_overflow() {
 				let a = $name::min_value();
 				let b = (-1).into();
-				assert!(a.checked_div(&b).is_none());
+				let _c = a / b;
 			}
 
 			#[test]
@@ -1264,8 +1266,7 @@ macro_rules! implement_fixed {
 
 				let a = $name::saturating_from_rational(-1, 2);
 				assert_eq!(a.saturating_mul_acc_int(42i8), 21i8);
-				assert_eq!(a.saturating_mul_acc_int(42u8), 21u8);
-				assert_eq!(a.saturating_mul_acc_int(u128::max_value() - 1), u128::max_value() / 2);
+				assert_eq!(a.saturating_mul_acc_int(u128::max_value() - 1), u128::max_value() - 1);
 			}
 
 			#[test]

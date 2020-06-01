@@ -2753,10 +2753,7 @@ fn remove_multi_deferred() {
 mod offchain_phragmen {
 	use crate::*;
 	use codec::Encode;
-	use frame_support::{
-		assert_noop, assert_ok, assert_err_with_weight,
-		dispatch::DispatchResultWithPostInfo,
-	};
+	use frame_support::{assert_noop, assert_ok};
 	use sp_runtime::transaction_validity::TransactionSource;
 	use mock::*;
 	use parking_lot::RwLock;
@@ -2811,29 +2808,6 @@ mod offchain_phragmen {
 		pool_state
 	}
 
-	fn election_size() -> ElectionSize {
-		ElectionSize {
-			validators: Staking::snapshot_validators().unwrap().len() as ValidatorIndex,
-			nominators: Staking::snapshot_nominators().unwrap().len() as NominatorIndex,
-		}
-	}
-
-	fn submit_solution(
-		origin: Origin,
-		winners: Vec<ValidatorIndex>,
-		compact: CompactAssignments,
-		score: PhragmenScore,
-	) -> DispatchResultWithPostInfo {
-		Staking::submit_election_solution(
-			origin,
-			winners,
-			compact,
-			score,
-			current_era(),
-			election_size(),
-		)
-	}
-
 	#[test]
 	fn is_current_session_final_works() {
 		ExtBuilder::default()
@@ -2859,7 +2833,7 @@ mod offchain_phragmen {
 	}
 
 	#[test]
-	fn offchain_window_is_triggered() {
+	fn offchain_election_flag_is_triggered() {
 		ExtBuilder::default()
 			.session_per_era(5)
 			.session_length(10)
@@ -2919,13 +2893,16 @@ mod offchain_phragmen {
 	}
 
 	#[test]
-	fn offchain_window_is_triggered_when_forcing() {
+	fn offchain_election_flag_is_triggered_when_forcing() {
 		ExtBuilder::default()
 			.session_per_era(5)
 			.session_length(10)
 			.election_lookahead(3)
 			.build()
 			.execute_with(|| {
+				run_to_block(7);
+				assert_session_era!(0, 0);
+
 				run_to_block(12);
 				ForceEra::put(Forcing::ForceNew);
 				run_to_block(13);
@@ -2933,90 +2910,11 @@ mod offchain_phragmen {
 
 				run_to_block(17); // instead of 47
 				assert_eq!(Staking::era_election_status(), ElectionStatus::Open(17));
-
-				run_to_block(20);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
 			})
 	}
 
 	#[test]
-	fn offchain_window_is_triggered_when_force_always() {
-		ExtBuilder::default()
-			.session_per_era(5)
-			.session_length(10)
-			.election_lookahead(3)
-			.build()
-			.execute_with(|| {
-
-				ForceEra::put(Forcing::ForceAlways);
-				run_to_block(16);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-
-				run_to_block(17); // instead of 37
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Open(17));
-
-				run_to_block(20);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-
-				run_to_block(26);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-
-				run_to_block(27); // next one again
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Open(27));
-			})
-	}
-
-	#[test]
-	fn offchain_window_closes_when_forcenone() {
-		ExtBuilder::default()
-			.session_per_era(5)
-			.session_length(10)
-			.election_lookahead(3)
-			.build()
-			.execute_with(|| {
-				ForceEra::put(Forcing::ForceNone);
-
-				run_to_block(36);
-				assert_session_era!(3, 0);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-
-				// opens
-				run_to_block(37);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Open(37));
-				assert!(Staking::is_current_session_final());
-				assert!(Staking::snapshot_validators().is_some());
-
-				// closes normally
-				run_to_block(40);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-				assert!(!Staking::is_current_session_final());
-				assert!(Staking::snapshot_validators().is_none());
-				assert_session_era!(4, 0);
-
-				run_to_block(47);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-				assert_session_era!(4, 0);
-
-				run_to_block(57);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-				assert_session_era!(5, 0);
-
-				run_to_block(67);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-
-				// Will not open again as scheduled
-				run_to_block(87);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-				assert_session_era!(8, 0);
-
-				run_to_block(90);
-				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
-				assert_session_era!(9, 0);
-			})
-	}
-
-	#[test]
-	fn offchain_window_on_chain_fallback_works() {
+	fn election_on_chain_fallback_works() {
 		ExtBuilder::default().build_and_execute(|| {
 			start_session(1);
 			start_session(2);
@@ -3098,30 +2996,16 @@ mod offchain_phragmen {
 				assert!(Staking::snapshot_validators().is_some());
 
 				let (compact, winners, score) = prepare_submission_with(true, 2, |_| {});
-				assert_ok!(submit_solution(
+				assert_ok!(Staking::submit_election_solution(
 					Origin::signed(10),
 					winners,
 					compact,
 					score,
+					current_era(),
 				));
 
 				let queued_result = Staking::queued_elected().unwrap();
 				assert_eq!(queued_result.compute, ElectionCompute::Signed);
-				assert_eq!(
-					System::events()
-						.into_iter()
-						.map(|r| r.event)
-						.filter_map(|e| {
-							if let MetaEvent::staking(inner) = e {
-								Some(inner)
-							} else {
-								None
-							}
-						})
-						.last()
-						.unwrap(),
-					RawEvent::SolutionStored(ElectionCompute::Signed),
-				);
 
 				run_to_block(15);
 				assert_eq!(Staking::era_election_status(), ElectionStatus::Closed);
@@ -3155,7 +3039,13 @@ mod offchain_phragmen {
 				assert_eq!(Staking::era_election_status(), ElectionStatus::Open(12));
 
 				let (compact, winners, score) = prepare_submission_with(true, 2, |_| {});
-				assert_ok!(submit_solution(Origin::signed(10), winners, compact, score));
+				assert_ok!(Staking::submit_election_solution(
+					Origin::signed(10),
+					winners,
+					compact,
+					score,
+					current_era(),
+				));
 
 				let queued_result = Staking::queued_elected().unwrap();
 				assert_eq!(queued_result.compute, ElectionCompute::Signed);
@@ -3198,17 +3088,15 @@ mod offchain_phragmen {
 				let (compact, winners, score) = prepare_submission_with(true, 2, |_| {});
 				Staking::kill_stakers_snapshot();
 
-				assert_err_with_weight!(
+				assert_noop!(
 					Staking::submit_election_solution(
 						Origin::signed(10),
-						winners.clone(),
-						compact.clone(),
+						winners,
+						compact,
 						score,
 						current_era(),
-						ElectionSize::default(),
 					),
 					Error::<Test>::PhragmenEarlySubmission,
-					Some(<Test as frame_system::Trait>::DbWeight::get().reads(1)),
 				);
 			})
 	}
@@ -3227,24 +3115,25 @@ mod offchain_phragmen {
 
 				// a good solution
 				let (compact, winners, score) = prepare_submission_with(true, 2, |_| {});
-				assert_ok!(submit_solution(
+				assert_ok!(Staking::submit_election_solution(
 					Origin::signed(10),
 					winners,
 					compact,
 					score,
+					current_era(),
 				));
 
 				// a bad solution
 				let (compact, winners, score) = horrible_phragmen_with_post_processing(false);
-				assert_err_with_weight!(
-					submit_solution(
+				assert_noop!(
+					Staking::submit_election_solution(
 						Origin::signed(10),
-						winners.clone(),
-						compact.clone(),
+						winners,
+						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenWeakSubmission,
-					Some(<Test as frame_system::Trait>::DbWeight::get().reads(3))
 				);
 			})
 	}
@@ -3263,20 +3152,22 @@ mod offchain_phragmen {
 
 				// a meeeeh solution
 				let (compact, winners, score) = horrible_phragmen_with_post_processing(false);
-				assert_ok!(submit_solution(
+				assert_ok!(Staking::submit_election_solution(
 					Origin::signed(10),
 					winners,
 					compact,
 					score,
+					current_era(),
 				));
 
 				// a better solution
 				let (compact, winners, score) = prepare_submission_with(true, 2, |_| {});
-				assert_ok!(submit_solution(
+				assert_ok!(Staking::submit_election_solution(
 					Origin::signed(10),
 					winners,
 					compact,
 					score,
+					current_era(),
 				));
 			})
 	}
@@ -3377,11 +3268,12 @@ mod offchain_phragmen {
 			run_to_block(12);
 			// put a good solution on-chain
 			let (compact, winners, score) = prepare_submission_with(true, 2, |_| {});
-			assert_ok!(submit_solution(
+			assert_ok!(Staking::submit_election_solution(
 				Origin::signed(10),
 				winners,
 				compact,
 				score,
+				current_era(),
 			),);
 
 			// now run the offchain worker in the same chain state.
@@ -3427,37 +3319,14 @@ mod offchain_phragmen {
 				assert_eq!(winners.len(), 3);
 
 				assert_noop!(
-					submit_solution(
-						Origin::signed(10),
-						winners,
-						compact,
-						score,
-					),
-					Error::<Test>::PhragmenBogusWinnerCount,
-				);
-			})
-	}
-
-	#[test]
-	fn invalid_phragmen_result_solution_size() {
-		ExtBuilder::default()
-			.offchain_phragmen_ext()
-			.build()
-			.execute_with(|| {
-				run_to_block(12);
-
-				let (compact, winners, score) = prepare_submission_with(true, 2, |_| {});
-
-				assert_noop!(
 					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
 						current_era(),
-						ElectionSize::default(),
 					),
-					Error::<Test>::PhragmenBogusElectionSize,
+					Error::<Test>::PhragmenBogusWinnerCount,
 				);
 			})
 	}
@@ -3481,11 +3350,12 @@ mod offchain_phragmen {
 				assert_eq!(winners.len(), 3);
 
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusWinnerCount,
 				);
@@ -3509,11 +3379,12 @@ mod offchain_phragmen {
 				assert_eq!(winners.len(), 4);
 
 				// all good. We chose 4 and it works.
-				assert_ok!(submit_solution(
+				assert_ok!(Staking::submit_election_solution(
 					Origin::signed(10),
 					winners,
 					compact,
 					score,
+					current_era(),
 				),);
 			})
 	}
@@ -3539,11 +3410,12 @@ mod offchain_phragmen {
 
 				// The error type sadly cannot be more specific now.
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusCompact,
 				);
@@ -3571,11 +3443,12 @@ mod offchain_phragmen {
 
 				// The error type sadly cannot be more specific now.
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusCompact,
 				);
@@ -3602,11 +3475,12 @@ mod offchain_phragmen {
 				let winners = vec![0, 1, 2, 4];
 
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusWinner,
 				);
@@ -3637,11 +3511,12 @@ mod offchain_phragmen {
 				});
 
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusEdge,
 				);
@@ -3672,11 +3547,12 @@ mod offchain_phragmen {
 				});
 
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusSelfVote,
 				);
@@ -3707,11 +3583,12 @@ mod offchain_phragmen {
 
 				// This raises score issue.
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusSelfVote,
 				);
@@ -3741,11 +3618,12 @@ mod offchain_phragmen {
 				}
 
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusCompact,
 				);
@@ -3782,11 +3660,12 @@ mod offchain_phragmen {
 				});
 
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusNomination,
 				);
@@ -3844,11 +3723,12 @@ mod offchain_phragmen {
 				});
 
 				// can be submitted.
-				assert_ok!(submit_solution(
+				assert_ok!(Staking::submit_election_solution(
 					Origin::signed(10),
 					winners,
 					compact,
 					score,
+					current_era(),
 				));
 
 				// a wrong solution.
@@ -3862,11 +3742,12 @@ mod offchain_phragmen {
 
 				// is rejected.
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenSlashedNomination,
 				);
@@ -3889,11 +3770,12 @@ mod offchain_phragmen {
 				score[0] += 1;
 
 				assert_noop!(
-					submit_solution(
+					Staking::submit_election_solution(
 						Origin::signed(10),
 						winners,
 						compact,
 						score,
+						current_era(),
 					),
 					Error::<Test>::PhragmenBogusScore,
 				);

@@ -24,6 +24,7 @@ use crate::{
 	init_logger, DatabaseParams, ImportParams, KeystoreParams, NetworkParams, NodeKeyParams,
 	OffchainWorkerParams, PruningParams, SharedParams, SubstrateCli,
 };
+use app_dirs::{AppDataType, AppInfo};
 use names::{Generator, Name};
 use sc_client_api::execution_extensions::ExecutionStrategies;
 use sc_service::config::{
@@ -405,10 +406,14 @@ pub trait CliConfiguration: Sized {
 		let config_dir = self
 			.base_path()?
 			.unwrap_or_else(|| {
-				directories::ProjectDirs::from("", "", C::executable_name())
-					.expect("app directories exist on all supported platforms; qed")
-					.data_local_dir()
-					.into()
+				app_dirs::get_app_root(
+					AppDataType::UserData,
+					&AppInfo {
+						name: C::executable_name(),
+						author: C::author(),
+					},
+				)
+				.expect("app directories exist on all supported platforms; qed")
 			})
 			.join("chains")
 			.join(chain_spec.id());

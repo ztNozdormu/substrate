@@ -126,18 +126,6 @@ pub struct GenericProto {
 	/// List of peers in our state.
 	peers: FnvHashMap<PeerId, PeerState>,
 
-	/// The elements in `peers` occasionally contain `Delay` objects that we would normally have
-	/// to be polled one by one. In order to avoid doing so, as an optimization, every `Delay` is
-	/// instead put inside of `delays` and reference by a [`DelayId`]. This stream
-	/// yields `PeerId`s whose `DelayId` is potentially ready.
-	///
-	/// By design, we never remove elements from this list. Elements are removed only when the
-	/// `Delay` triggers. As such, this stream may produce obsolete elements.
-	delays: stream::FuturesUnordered<Pin<Box<dyn Future<Output = (DelayId, PeerId)> + Send>>>,
-
-	/// [`DelayId`] to assign to the next delay.
-	next_delay_id: DelayId,
-
 	/// List of incoming messages we have sent to the peer set manager and that are waiting for an
 	/// answer.
 	incoming: SmallVec<[IncomingPeer; 6]>,
@@ -152,10 +140,6 @@ pub struct GenericProto {
 	/// If `Some`, report the message queue sizes on this `Histogram`.
 	queue_size_report: Option<HistogramVec>,
 }
-
-/// Identifier for a delay firing.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct DelayId(u64);
 
 /// State of a peer we're connected to.
 #[derive(Debug)]
@@ -174,8 +158,8 @@ enum PeerState {
 
 	/// The peerset requested that we connect to this peer. We are currently not connected.
 	PendingRequest {
-		/// When to actually start dialing. References an entry in `delays`.
-		timer: DelayId,
+		/// When to actually start dialing.
+		timer: futures_timer::Delay,
 		/// When the `timer` will trigger.
 		timer_deadline: Instant,
 	},
@@ -199,8 +183,8 @@ enum PeerState {
 	DisabledPendingEnable {
 		/// The connections that are currently open for custom protocol traffic.
 		open: SmallVec<[ConnectionId; crate::MAX_CONNECTIONS_PER_PEER]>,
-		/// When to enable this remote. References an entry in `delays`.
-		timer: DelayId,
+		/// When to enable this remote.
+		timer: futures_timer::Delay,
 		/// When the `timer` will trigger.
 		timer_deadline: Instant,
 	},
@@ -354,8 +338,6 @@ impl GenericProto {
 			notif_protocols: Vec::new(),
 			peerset,
 			peers: FnvHashMap::default(),
-			delays: Default::default(),
-			next_delay_id: DelayId(0),
 			incoming: SmallVec::new(),
 			next_incoming_index: sc_peerset::IncomingIndex(0),
 			events: VecDeque::new(),
@@ -645,20 +627,10 @@ impl GenericProto {
 
 		match mem::replace(occ_entry.get_mut(), PeerState::Poisoned) {
 			PeerState::Banned { ref until } if *until > now => {
-				let peer_id = occ_entry.key().clone();
 				debug!(target: "sub-libp2p", "PSM => Connect({:?}): Will start to connect at \
-					until {:?}", peer_id, until);
-
-				let delay_id = self.next_delay_id;
-				self.next_delay_id.0 += 1;
-				let delay = futures_timer::Delay::new(*until - now);
-				self.delays.push(async move {
-					delay.await;
-					(delay_id, peer_id)
-				}.boxed());
-
+					until {:?}", occ_entry.key(), until);
 				*occ_entry.into_mut() = PeerState::PendingRequest {
-					timer: delay_id,
+					timer: futures_timer::Delay::new(*until - now),
 					timer_deadline: *until,
 				};
 			},
@@ -677,21 +649,11 @@ impl GenericProto {
 				open,
 				banned_until: Some(ref banned)
 			} if *banned > now => {
-				let peer_id = occ_entry.key().clone();
 				debug!(target: "sub-libp2p", "PSM => Connect({:?}): But peer is banned until {:?}",
-					peer_id, banned);
-
-				let delay_id = self.next_delay_id;
-				self.next_delay_id.0 += 1;
-				let delay = futures_timer::Delay::new(*banned - now);
-				self.delays.push(async move {
-					delay.await;
-					(delay_id, peer_id)
-				}.boxed());
-
+					occ_entry.key(), banned);
 				*occ_entry.into_mut() = PeerState::DisabledPendingEnable {
 					open,
-					timer: delay_id,
+					timer: futures_timer::Delay::new(*banned - now),
 					timer_deadline: *banned,
 				};
 			},
@@ -1401,37 +1363,34 @@ impl NetworkBehaviour for GenericProto {
 			}
 		}
 
-		while let Poll::Ready(Some((delay_id, peer_id))) =
-			Pin::new(&mut self.delays).poll_next(cx) {
-			let peer_state = match self.peers.get_mut(&peer_id) {
-				Some(s) => s,
-				// We intentionally never remove elements from `delays`, and it may
-				// thus contain peers which are now gone. This is a normal situation.
-				None => continue,
-			};
-
+		for (peer_id, peer_state) in self.peers.iter_mut() {
 			match peer_state {
-				PeerState::PendingRequest { timer, .. } if *timer == delay_id => {
+				PeerState::PendingRequest { timer, .. } => {
+					if let Poll::Pending = Pin::new(timer).poll(cx) {
+						continue;
+					}
+
 					debug!(target: "sub-libp2p", "Libp2p <= Dial {:?} now that ban has expired", peer_id);
 					self.events.push_back(NetworkBehaviourAction::DialPeer {
-						peer_id,
+						peer_id: peer_id.clone(),
 						condition: DialPeerCondition::Disconnected
 					});
 					*peer_state = PeerState::Requested;
 				}
 
-				PeerState::DisabledPendingEnable { timer, open, .. } if *timer == delay_id => {
+				PeerState::DisabledPendingEnable { timer, open, .. } => {
+					if let Poll::Pending = Pin::new(timer).poll(cx) {
+						continue;
+					}
+
 					debug!(target: "sub-libp2p", "Handler({:?}) <= Enable (ban expired)", peer_id);
 					self.events.push_back(NetworkBehaviourAction::NotifyHandler {
-						peer_id,
+						peer_id: peer_id.clone(),
 						handler: NotifyHandler::All,
 						event: NotifsHandlerIn::Enable,
 					});
 					*peer_state = PeerState::Enabled { open: mem::replace(open, Default::default()) };
 				}
-
-				// We intentionally never remove elements from `delays`, and it may
-				// thus contain obsolete entries. This is a normal situation.
 				_ => {},
 			}
 		}

@@ -37,9 +37,6 @@ pub trait OffchainStorage: Clone + Send + Sync {
 	/// Persist a value in storage under given key and prefix.
 	fn set(&mut self, prefix: &[u8], key: &[u8], value: &[u8]);
 
-	/// Clear a storage entry under given key and prefix.
-	fn remove(&mut self, prefix: &[u8], key: &[u8]);
-
 	/// Retrieve a value from storage under given key and prefix.
 	fn get(&self, prefix: &[u8], key: &[u8]) -> Option<Vec<u8>>;
 
@@ -222,7 +219,7 @@ pub struct Duration(u64);
 
 impl Duration {
 	/// Create new duration representing given number of milliseconds.
-	pub const fn from_millis(millis: u64) -> Self {
+	pub fn from_millis(millis: u64) -> Self {
 		Duration(millis)
 	}
 
@@ -349,14 +346,8 @@ pub trait Externalities: Send {
 	/// Sets a value in the local storage.
 	///
 	/// Note this storage is not part of the consensus, it's only accessible by
-	/// offchain worker tasks running on the same machine. It _is_ persisted between runs.
+	/// offchain worker tasks running on the same machine. It IS persisted between runs.
 	fn local_storage_set(&mut self, kind: StorageKind, key: &[u8], value: &[u8]);
-
-	/// Removes a value in the local storage.
-	///
-	/// Note this storage is not part of the consensus, it's only accessible by
-	/// offchain worker tasks running on the same machine. It _is_ persisted between runs.
-	fn local_storage_clear(&mut self, kind: StorageKind, key: &[u8]);
 
 	/// Sets a value in the local storage if it matches current value.
 	///
@@ -366,7 +357,7 @@ pub trait Externalities: Send {
 	/// Returns `true` if the value has been set, `false` otherwise.
 	///
 	/// Note this storage is not part of the consensus, it's only accessible by
-	/// offchain worker tasks running on the same machine. It _is_ persisted between runs.
+	/// offchain worker tasks running on the same machine. It IS persisted between runs.
 	fn local_storage_compare_and_set(
 		&mut self,
 		kind: StorageKind,
@@ -379,7 +370,7 @@ pub trait Externalities: Send {
 	///
 	/// If the value does not exist in the storage `None` will be returned.
 	/// Note this storage is not part of the consensus, it's only accessible by
-	/// offchain worker tasks running on the same machine. It _is_ persisted between runs.
+	/// offchain worker tasks running on the same machine. It IS persisted between runs.
 	fn local_storage_get(&mut self, kind: StorageKind, key: &[u8]) -> Option<Vec<u8>>;
 
 	/// Initiates a http request given HTTP verb and the URL.
@@ -522,10 +513,6 @@ impl<T: Externalities + ?Sized> Externalities for Box<T> {
 		(&mut **self).local_storage_set(kind, key, value)
 	}
 
-	fn local_storage_clear(&mut self, kind: StorageKind, key: &[u8]) {
-		(&mut **self).local_storage_clear(kind, key)
-	}
-
 	fn local_storage_compare_and_set(
 		&mut self,
 		kind: StorageKind,
@@ -629,11 +616,6 @@ impl<T: Externalities> Externalities for LimitedExternalities<T> {
 	fn local_storage_set(&mut self, kind: StorageKind, key: &[u8], value: &[u8]) {
 		self.check(Capability::OffchainWorkerDbWrite, "local_storage_set");
 		self.externalities.local_storage_set(kind, key, value)
-	}
-
-	fn local_storage_clear(&mut self, kind: StorageKind, key: &[u8]) {
-		self.check(Capability::OffchainWorkerDbWrite, "local_storage_clear");
-		self.externalities.local_storage_clear(kind, key)
 	}
 
 	fn local_storage_compare_and_set(

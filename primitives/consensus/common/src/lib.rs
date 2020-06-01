@@ -157,7 +157,7 @@ pub trait Proposer<B: BlockT> {
 	///
 	/// Returns a future that resolves to a [`Proposal`] or to [`Error`].
 	fn propose(
-		self,
+		&mut self,
 		inherent_data: InherentData,
 		inherent_digests: DigestFor<B>,
 		max_duration: Duration,
